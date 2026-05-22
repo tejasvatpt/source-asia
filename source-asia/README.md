@@ -1,185 +1,282 @@
-# Source Asia – Backend Assignment
+# Source Asia Backend Assignment
 
-Built with Go (standard library only, no external dependencies).
+Small Go HTTP server for both assignment parts.
 
----
+```txt
+Part 1 -> rate limited API
+Part 2 -> product catalog with media URLs
+```
 
-## How to Run
+Uses only Go standard library. Data is stored in memory.
 
-```bash
+## Run on Windows
+
+If using GitHub:
+
+```powershell
+git clone <repo-link>
 cd source-asia
+```
+
+If using zip, unzip it and open the folder:
+
+```powershell
+cd source-asia
+```
+
+Run:
+
+```powershell
 go run ./cmd/server
 ```
 
-Server starts on port 8080 by default. To use a different port:
+Server starts on:
 
-```bash
-PORT=9090 go run ./cmd/server
+```txt
+http://localhost:8080
 ```
 
----
+Check compile:
 
-## Part 1 – Rate-Limited API
+```powershell
+go test ./...
+```
 
-### Design Decisions
+## Part 1 - Rate Limited API
 
-| Decision | Choice |
-|---|---|
-| HTTP status on accept | 201 Created |
-| Rate-limit window | Sliding (rolling) 60 seconds |
-| Rejected counter | Cumulative lifetime count |
-| Concurrency | Per-user Mutex + RWMutex on the map |
+Endpoints:
 
-**Why 201 and not 200:** Each accepted request creates a new entry in the rate-limit log, so 201 Created is more accurate.
+```txt
+POST /request
+GET /stats
+```
 
-**Why sliding window:** A fixed window resets at set intervals. A user could fire 5 requests at second :59 and 5 more at second :00 — that is 10 requests in under a second. The sliding window prevents this by checking any rolling 60-second period.
+Rules:
 
-**Why cumulative rejected count:** Per-window rejected counts reset and lose history. A cumulative count gives a better audit trail.
+```txt
+5 accepted requests per user
+rolling 60 second window
+201 -> accepted
+429 -> rate limit crossed
+rejected count -> lifetime count while server is running
+concurrency safe using mutexes
+```
 
----
+Send request:
 
-### POST /request
+```powershell
+$body = @{
+  user_id = "alice"
+  payload = @{ action = "buy" }
+} | ConvertTo-Json -Depth 5
 
-**Request body:**
-```json
-{
-  "user_id": "alice",
-  "payload": { "any": "json value" }
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/request" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Trigger rate limit:
+
+```powershell
+1..6 | ForEach-Object {
+  $body = @{
+    user_id = "bob"
+    payload = "test"
+  } | ConvertTo-Json -Depth 5
+
+  Invoke-RestMethod -Method Post `
+    -Uri "http://localhost:8080/request" `
+    -ContentType "application/json" `
+    -Body $body
 }
 ```
 
-**201 Created – request accepted:**
-```json
-{
-  "message": "request accepted",
-  "user_id": "alice",
-  "accepted": true
-}
+First 5 requests pass. The 6th request returns:
+
+```txt
+429 -> rate_limit_exceeded
 ```
 
-**429 Too Many Requests – rate limit hit:**
-```json
-{
-  "error": "rate_limit_exceeded",
-  "message": "you have exceeded the limit of 5 requests per 60-second window"
-}
+Check stats:
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8080/stats" | ConvertTo-Json -Depth 5
 ```
 
-**400 Bad Request – missing user_id:**
-```json
-{
-  "error": "missing_user_id",
-  "message": "user_id is required and must be non-empty"
-}
+Common errors:
+
+```txt
+bad JSON -> 400 invalid_json
+missing user_id -> 400 missing_user_id
+missing payload -> 400 missing_payload
+limit crossed -> 429 rate_limit_exceeded
 ```
 
-**400 Bad Request – missing payload:**
-```json
-{
-  "error": "missing_payload",
-  "message": "payload is required"
-}
+## Part 2 - Product Catalog
+
+Endpoints:
+
+```txt
+POST /products
+GET /products
+GET /products/{id}
+POST /products/{id}/media
 ```
 
-**400 Bad Request – bad JSON:**
-```json
-{
-  "error": "invalid_json",
-  "message": "request body must be valid JSON: ..."
-}
+Product rules:
+
+```txt
+name is required
+sku is required and unique
+media are URL strings only
+URLs must start with http:// or https://
+max URL length is 2048
+max 20 image URLs and 20 video URLs per request
 ```
 
----
+Create product:
 
-### GET /stats
+```powershell
+$body = @{
+  name = "Product A"
+  sku = "SKU-001"
+  image_urls = @(
+    "https://cdn.example.com/products/sku-001/img-1.jpg",
+    "https://cdn.example.com/products/sku-001/img-2.jpg"
+  )
+  video_urls = @(
+    "https://cdn.example.com/products/sku-001/demo.mp4"
+  )
+} | ConvertTo-Json -Depth 5
 
-**200 OK:**
-```json
-{
-  "users": [
-    {
-      "user_id": "alice",
-      "accepted_in_window": 3,
-      "rejected_total": 2
-    }
-  ]
-}
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/products" `
+  -ContentType "application/json" `
+  -Body $body
 ```
 
-- `accepted_in_window` — accepted requests in the current rolling 60-second window
-- `rejected_total` — cumulative lifetime rejected requests for this user
+Expected:
 
----
-
-### curl Examples
-
-```bash
-# Send a valid request
-curl -X POST http://localhost:8080/request \
-  -H "Content-Type: application/json" \
-  -d '{"user_id":"alice","payload":{"action":"buy"}}'
-
-# Trigger the rate limit — run this 6 times quickly
-for i in $(seq 1 6); do
-  curl -s -X POST http://localhost:8080/request \
-    -H "Content-Type: application/json" \
-    -d '{"user_id":"alice","payload":"test"}'
-  echo ""
-done
-
-# Missing user_id — expect 400
-curl -X POST http://localhost:8080/request \
-  -H "Content-Type: application/json" \
-  -d '{"payload":"no user"}'
-
-# Empty user_id — expect 400
-curl -X POST http://localhost:8080/request \
-  -H "Content-Type: application/json" \
-  -d '{"user_id":"","payload":"empty"}'
-
-# Bad JSON — expect 400
-curl -X POST http://localhost:8080/request \
-  -H "Content-Type: application/json" \
-  -d 'not-valid-json'
-
-# View stats
-curl http://localhost:8080/stats
+```txt
+201 -> product created
 ```
 
----
+Run the same command again to check duplicate SKU:
 
-### Production Limitations
+```txt
+409 -> duplicate_sku
+```
 
-| Limitation | Detail |
-|---|---|
-| Single instance only | The in-memory limiter is local to one process. Multiple instances would each allow 5 requests, breaking the global limit. Fix: use Redis with atomic operations. |
-| Restart loses state | All counters reset on restart. Fix: persist to Redis or a database with TTL support. |
-| No authentication | Any caller can use any user_id. In production, derive the user identity from a verified JWT or API key. |
-| No request size limit | A very large payload could exhaust memory. Fix: wrap the handler with http.MaxBytesReader. |
-| Clock dependency | The sliding window uses the local machine clock. In a multi-instance setup, small clock differences cause minor inconsistencies. Fix: use a central time source or Redis TTL. |
+List products:
 
----
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8080/products?limit=20&offset=0" | ConvertTo-Json -Depth 5
+```
+
+The list response returns summary fields only:
+
+```txt
+id, name, sku, image_count, video_count, thumbnail_url, created_at
+```
+
+It does not return all image/video URLs. Full media URLs are returned only in the detail API.
+
+Get product detail:
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8080/products/1" | ConvertTo-Json -Depth 5
+```
+
+Add media:
+
+```powershell
+$body = @{
+  image_urls = @("https://cdn.example.com/products/sku-001/img-3.jpg")
+  video_urls = @("https://cdn.example.com/products/sku-001/review.mp4")
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8080/products/1/media" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+Validation examples:
+
+```txt
+duplicate sku -> 409 duplicate_sku
+invalid URL -> 400 validation_failed
+empty media body -> 400 missing_media
+unknown product -> 404 product_not_found
+```
+
+Unknown product check:
+
+```powershell
+curl.exe -i "http://localhost:8080/products/999"
+```
+
+## Storage
+
+Part 1 stores recent request timestamps per user.
+
+Part 2 uses:
+
+```txt
+products map[id]*Product
+skuToID map[sku]id
+order []id
+```
+
+This keeps create, duplicate SKU check, list, detail, and media append simple.
+
+For the product list API, only summary fields are prepared. For the detail API, the full product with all media URLs is returned.
+
+## Production Notes
+
+Current limits:
+
+```txt
+restart clears data
+single server instance only
+no authentication
+no real CDN upload
+no database
+```
+
+In production I would use Redis for shared rate limiting, PostgreSQL for product/media data, and a CDN or object storage service for actual media files.
+
+With PostgreSQL, products would be stored in a `products` table and media URLs would be stored in a separate `product_media` table. The `sku` column would have a unique index. The list API would fetch only product summary data, and the detail API would fetch media URLs for one selected product.
 
 ## Project Structure
 
-```
+```txt
 source-asia/
-├── cmd/
-│   └── server/
-│       └── main.go
-├── internal/
-│   ├── handler/
-│   │   └── part1.go
-│   ├── models/
-│   │   └── models.go
-│   └── ratelimit/
-│       └── limiter.go
-├── go.mod
-└── README.md
+  cmd/
+    server/
+      main.go
+  internal/
+    catalog/
+      store.go
+    handler/
+      part1.go
+      part2.go
+    models/
+      models.go
+    ratelimit/
+      limiter.go
+  go.mod
+  README.md
 ```
 
----
+## Incomplete Requirements
+
+None known.
 
 ## AI Usage
 
-Used Claude (Anthropic) to assist with code structure, sliding window design, and README writing.
+AI was used to help understand the assignment requirements and shape the README text.
