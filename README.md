@@ -273,10 +273,6 @@ source-asia/
   README.md
 ```
 
-## Incomplete Requirements
-
-None known.
-
 ## AI Usage
 
 AI was used to help understand the assignment requirements and shape the README text.
