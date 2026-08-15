@@ -275,4 +275,4 @@ source-asia/
 
 ## AI Usage
 
-AI was used to help understand the assignment requirements and shape the README text.
+AI was used to shape the README text.
